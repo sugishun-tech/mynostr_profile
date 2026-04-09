@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nostr Profile Viewer</title>
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <div class="app-container">
+      <header class="sidebar">
+        <h1>Nostr Viewer</h1>
+        <div id="auth-section">
+          <button id="btn-login" class="btn btn-primary">NIP-07 Login</button>
+          <div id="logged-in-info" class="hidden">
+            <span id="logged-in-pubkey"></span>
+          </div>
+        </div>
+      </header>
+
+      <main class="main-content">
+        <div id="profile-container" class="profile-card">
+          <div class="banner" id="profile-banner"></div>
+          <div class="profile-info">
+            <img src="" id="profile-icon" class="icon" alt="icon">
+            <div class="profile-actions">
+              <button id="btn-follow-main" class="btn btn-primary hidden">Follow</button>
+            </div>
+            <h2 class="display-name"><span id="profile-display-name"></span> <span id="profile-nip05"></span></h2>
+            <p class="name">@<span id="profile-name"></span></p>
+            <p class="about" id="profile-about"></p>
+            
+            <div class="keys-section">
+              <button class="btn-copy" id="btn-copy-npub">npubをコピー</button>
+              <button class="btn-copy" id="btn-copy-hex">hexをコピー</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabs">
+          <button class="tab-btn active" data-target="tab-posts">投稿</button>
+          <button class="tab-btn" data-target="tab-following">フォロー</button>
+          <button class="tab-btn" data-target="tab-followers">フォロワー</button>
+          <button class="tab-btn" data-target="tab-mutes">ミュート</button>
+          <button class="tab-btn" data-target="tab-relays">リレー</button>
+        </div>
+
+        <div class="tab-content active" id="tab-posts">
+          <div id="posts-list"></div>
+          <button id="btn-load-more" class="btn btn-block hidden">さらに読み込む</button>
+        </div>
+        <div class="tab-content" id="tab-following"><div class="user-list" id="following-list"></div></div>
+        <div class="tab-content" id="tab-followers"><div class="user-list" id="followers-list"></div></div>
+        <div class="tab-content" id="tab-mutes"><div class="user-list" id="mutes-list"></div></div>
+        <div class="tab-content" id="tab-relays"><div class="relay-list" id="relays-list"></div></div>
+      </main>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>
