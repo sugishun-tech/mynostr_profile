@@ -66,3 +66,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helve
 
 /* Relay Lists */
 .relay-item { padding: 15px; border-bottom: 1px solid var(--border-color); }
+
+@media (max-width: 700px) {
+  .app-container { justify-content: flex-start; }
+  .sidebar { display: none; } /* サイドバー非表示 */
+  .main-content { max-width: 100%; border: none; } /* 画面幅いっぱいに */
+}
