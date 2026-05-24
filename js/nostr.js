@@ -1,98 +1,163 @@
 import { SimplePool, nip19 } from 'https://esm.sh/nostr-tools@2.7.0';
-import { CONFIG } from './config.js';
+import { getConfiguredRelays } from './utils.js';
 
 const pool = new SimplePool();
 
+function latestEvent(events) {
+  return [...events].sort((a, b) => b.created_at - a.created_at)[0] || null;
+}
+
+async function publishToConfiguredRelays(event) {
+  const relays = getConfiguredRelays();
+  const results = await Promise.allSettled(pool.publish(relays, event));
+  const success = results.filter(r => r.status === 'fulfilled').length;
+  if (success === 0) throw new Error('どのリレーにも publish できませんでした');
+  return { success, total: relays.length };
+}
+
 export const NostrAPI = {
   hexToNpub: (hex) => nip19.npubEncode(hex),
+
+  npubToHex: (npub) => {
+    const decoded = nip19.decode(npub);
+    if (decoded.type !== 'npub') throw new Error('npub形式が不正です');
+    return decoded.data;
+  },
+
+  getRelays: () => getConfiguredRelays(),
+
+  getProfileEvent: async (hex) => {
+    return await pool.get(getConfiguredRelays(), { kinds: [0], authors: [hex] });
+  },
   
-  // プロフィール(kind:0)を取得し、JSONパースして返す
   getProfile: async (hex) => {
-    const event = await pool.get(CONFIG.DEFAULT_RELAYS, { kinds: [0], authors: [hex] });
+    const event = await NostrAPI.getProfileEvent(hex);
     if (!event) return null;
     try {
-      return { ...JSON.parse(event.content), pubkey: event.pubkey };
+      return { ...JSON.parse(event.content), pubkey: event.pubkey, _event: event };
     } catch (e) {
       return null;
     }
   },
 
-  // 複数のプロファイルをまとめて取得 (フォローリスト等で使用)
   getProfilesBatch: async (pubkeys) => {
-    const events = await pool.querySync(CONFIG.DEFAULT_RELAYS, { kinds: [0], authors: pubkeys });
+    const uniquePubkeys = [...new Set(pubkeys || [])].filter(Boolean);
+    if (uniquePubkeys.length === 0) return {};
+    const events = await pool.querySync(getConfiguredRelays(), { kinds: [0], authors: uniquePubkeys });
     const profiles = {};
     events.forEach(ev => {
-      try { profiles[ev.pubkey] = JSON.parse(ev.content); } catch(e){}
+      const current = profiles[ev.pubkey]?._event;
+      if (current && current.created_at > ev.created_at) return;
+      try { profiles[ev.pubkey] = { ...JSON.parse(ev.content), _event: ev }; } catch(e) {}
     });
     return profiles;
   },
 
-  // NIP-05のバリデーション
   validateNip05: async (nip05, pubkey) => {
     try {
-      const [name, domain] = nip05.split('@');
-      if (!domain) return false;
-      const res = await fetch(`https://${domain}/.well-known/nostr.json?name=${name}`);
+      const [name, domain] = (nip05 || '').split('@');
+      if (!name || !domain) return false;
+      const res = await fetch(`https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`);
       const data = await res.json();
-      return data.names[name] === pubkey;
+      return data.names?.[name] === pubkey;
     } catch (error) {
       return false;
     }
   },
 
-  // 投稿一覧取得
   getPosts: async (hex, until, limit) => {
-    const filter = { kinds: [1], authors: [hex], limit: limit };
+    const filter = { kinds: [1], authors: [hex], limit };
     if (until) filter.until = until;
-    const posts = await pool.querySync(CONFIG.DEFAULT_RELAYS, filter);
-    // 時刻降順(新しい順)にソート
-    return posts.sort((a, b) => b.created_at - a.created_at);
+    const posts = await pool.querySync(getConfiguredRelays(), filter);
+    const byId = new Map(posts.map(post => [post.id, post]));
+    return [...byId.values()].sort((a, b) => b.created_at - a.created_at);
   },
 
-  // フォローリスト/リレー取得 (kind:3)
   getContactList: async (hex) => {
-    return await pool.get(CONFIG.DEFAULT_RELAYS, { kinds: [3], authors: [hex] });
-  },
-
-  // ミュートリスト取得 (kind:10000)
-  getMuteList: async (hex) => {
-    return await pool.get(CONFIG.DEFAULT_RELAYS, { kinds: [10000], authors: [hex] });
-  },
-
-  // フォロワー取得 (該当ユーザーをkind:3のタグに含むイベントを検索)
-  getFollowers: async (hex) => {
-    // 注: クライアントサイドでのフォロワー検索は接続リレーに依存するため、完全ではない場合があります
-    const events = await pool.querySync(CONFIG.DEFAULT_RELAYS, { kinds: [3], "#p": [hex], limit: 100 });
-    return events.map(ev => ev.pubkey);
-  },
-
-  // ユーザーをフォローする (NIP-07)
-  followUser: async (targetHex) => {
-    if (!window.nostr) throw new Error("NIP-07 拡張機能が見つかりません");
-    const myPubkey = await window.nostr.getPublicKey();
-    
-    // 最新の自分のkind:3を取得（既存のフォローリストを消さないため）
-    let myKind3 = await pool.get(CONFIG.DEFAULT_RELAYS, { kinds: [3], authors: [myPubkey] });
-    let tags = myKind3 ? myKind3.tags : [];
-    let content = myKind3 ? myKind3.content : "";
-    
-    // 既にフォローしているかチェック
-    if (tags.some(t => t[0] === 'p' && t[1] === targetHex)) {
-      alert("すでにフォローしています");
-      return;
+    try {
+      return await pool.get(getConfiguredRelays(), { kinds: [3], authors: [hex] });
+    } catch (e) {
+      console.warn('contact list fetch failed', e);
+      return null;
     }
+  },
 
-    tags.push(["p", targetHex]);
+  getMuteList: async (hex) => {
+    try {
+      return await pool.get(getConfiguredRelays(), { kinds: [10000], authors: [hex] });
+    } catch (e) {
+      console.warn('mute list fetch failed', e);
+      return null;
+    }
+  },
 
-    const eventTemplate = {
+  getFollowers: async (hex) => {
+    try {
+      const events = await pool.querySync(getConfiguredRelays(), { kinds: [3], '#p': [hex], limit: 200 });
+      return [...new Set(events.map(ev => ev.pubkey))];
+    } catch (e) {
+      console.warn('followers fetch failed', e);
+      return [];
+    }
+  },
+
+  getFollowingSet: async (hex) => {
+    const ev = await NostrAPI.getContactList(hex);
+    return new Set((ev?.tags || []).filter(t => t[0] === 'p').map(t => t[1]));
+  },
+
+  isFollowing: async (myPubkey, targetHex) => {
+    if (!myPubkey || !targetHex || myPubkey === targetHex) return false;
+    const following = await NostrAPI.getFollowingSet(myPubkey);
+    return following.has(targetHex);
+  },
+
+  setFollow: async (targetHex, shouldFollow) => {
+    if (!window.nostr) throw new Error('NIP-07 拡張機能が見つかりません');
+    const myPubkey = await window.nostr.getPublicKey();
+    if (myPubkey === targetHex) throw new Error('自分自身はフォロー/アンフォロー対象外です');
+
+    const myKind3 = await NostrAPI.getContactList(myPubkey);
+    let tags = myKind3 ? [...myKind3.tags] : [];
+    const content = myKind3 ? myKind3.content : '';
+    const exists = tags.some(t => t[0] === 'p' && t[1] === targetHex);
+
+    if (shouldFollow && !exists) tags.push(['p', targetHex]);
+    if (!shouldFollow) tags = tags.filter(t => !(t[0] === 'p' && t[1] === targetHex));
+
+    const signedEvent = await window.nostr.signEvent({
       kind: 3,
       created_at: Math.floor(Date.now() / 1000),
-      tags: tags,
-      content: content
-    };
+      tags,
+      content
+    });
+    return await publishToConfiguredRelays(signedEvent);
+  },
 
-    const signedEvent = await window.nostr.signEvent(eventTemplate);
-    await Promise.any(pool.publish(CONFIG.DEFAULT_RELAYS, signedEvent));
-    alert("フォローしました！");
+  followUser: async (targetHex) => NostrAPI.setFollow(targetHex, true),
+  unfollowUser: async (targetHex) => NostrAPI.setFollow(targetHex, false),
+
+  updateProfile: async (profile) => {
+    if (!window.nostr) throw new Error('NIP-07 拡張機能が見つかりません');
+    const myPubkey = await window.nostr.getPublicKey();
+    const current = await NostrAPI.getProfile(myPubkey);
+    const merged = { ...(current || {}) };
+    delete merged.pubkey;
+    delete merged._event;
+
+    ['picture', 'banner', 'display_name', 'name', 'about', 'nip05'].forEach(key => {
+      const value = profile[key];
+      if (value === undefined) return;
+      if ((value || '').trim() === '') delete merged[key];
+      else merged[key] = value.trim();
+    });
+
+    const signedEvent = await window.nostr.signEvent({
+      kind: 0,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: JSON.stringify(merged)
+    });
+    return await publishToConfiguredRelays(signedEvent);
   }
 };

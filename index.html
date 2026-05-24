@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nostr Profile Viewer</title>
-    <link rel="stylesheet" href="style.css?202604091259">
+    <link rel="stylesheet" href="style.css?2026052404">
   </head>
   <body>
     <div class="app-container">
@@ -16,46 +16,94 @@
             <span id="logged-in-pubkey"></span>
           </div>
         </div>
+        <nav class="side-nav">
+          <a href="?view=me" id="nav-profile">自分のプロフィール</a>
+          <a href="?settings=1" id="nav-settings">設定</a>
+        </nav>
       </header>
 
       <main class="main-content">
-        <div id="profile-container" class="profile-card">
-          <div class="banner" id="profile-banner"></div>
-          <div class="profile-info">
-            <img src="" id="profile-icon" class="icon" alt="icon">
-            <div class="profile-actions">
-              <button id="btn-follow-main" class="btn btn-primary hidden">Follow</button>
-            </div>
-            <h2 class="display-name"><span id="profile-display-name"></span> <span id="profile-nip05"></span></h2>
-            <p class="name">@<span id="profile-name"></span></p>
-            <p class="about" id="profile-about"></p>
-            
-            <div class="keys-section">
-              <button class="btn-copy" id="btn-copy-npub">npubをコピー</button>
-              <button class="btn-copy" id="btn-copy-hex">hexをコピー</button>
+        <section id="settings-page" class="settings-page hidden">
+          <h2>設定</h2>
+          <p class="settings-help">利用するリレーを1行に1つずつ入力してください。空で保存するとデフォルトリレーに戻ります。</p>
+          <textarea id="relay-settings-input" rows="8" spellcheck="false"></textarea>
+          <div class="settings-actions">
+            <button id="btn-save-relays" class="btn btn-primary">リレー設定を保存</button>
+            <button id="btn-reset-relays" class="btn btn-outline">デフォルトに戻す</button>
+          </div>
+          <h3>現在の有効リレー</h3>
+          <div id="active-relays-list" class="relay-list"></div>
+        </section>
+
+        <section id="start-page" class="hidden">
+          <div class="message-card">
+            <h2>表示するプロフィールを判別できません</h2>
+            <p>?hex=PUBKEY_HEX / ?npub=npub... は他人のプロフィールを見る用途です。自分のプロフィールを見る場合はログインしてください。</p>
+            <button id="btn-open-my-profile" class="btn btn-primary">ログインして自分のプロフィールを表示</button>
+          </div>
+        </section>
+
+        <section id="profile-page">
+          <div id="profile-container" class="profile-card">
+            <div class="banner" id="profile-banner"></div>
+            <div class="profile-info">
+              <img src="" id="profile-icon" class="icon" alt="icon">
+              <div class="profile-actions">
+                <button id="btn-edit-profile" class="btn btn-outline hidden">Edit profile</button>
+                <button id="btn-follow-main" class="btn btn-primary hidden">Follow</button>
+              </div>
+              <h2 class="display-name"><span id="profile-display-name"></span> <span id="profile-nip05"></span></h2>
+              <p class="name">@<span id="profile-name"></span></p>
+              <p class="about collapsed" id="profile-about"></p>
+              <button id="btn-about-more" class="btn-text hidden">view more</button>
+              
+              <div class="keys-section">
+                <button class="btn-copy" id="btn-copy-npub">npubをコピー</button>
+                <button class="btn-copy" id="btn-copy-hex">hexをコピー</button>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div class="tabs">
-          <button class="tab-btn active" data-target="tab-posts">投稿</button>
-          <button class="tab-btn" data-target="tab-following">フォロー</button>
-          <button class="tab-btn" data-target="tab-followers">フォロワー</button>
-          <button class="tab-btn" data-target="tab-mutes">ミュート</button>
-          <button class="tab-btn" data-target="tab-relays">リレー</button>
-        </div>
+          <div class="tabs">
+            <button class="tab-btn active" data-target="tab-posts">投稿</button>
+            <button class="tab-btn" data-target="tab-following">フォロー</button>
+            <button class="tab-btn" data-target="tab-followers">フォロワー</button>
+            <button class="tab-btn" data-target="tab-mutes">ミュート</button>
+            <button class="tab-btn" data-target="tab-relays">リレー</button>
+          </div>
 
-        <div class="tab-content active" id="tab-posts">
-          <div id="posts-list"></div>
-          <button id="btn-load-more" class="btn btn-block hidden">さらに読み込む</button>
-        </div>
-        <div class="tab-content" id="tab-following"><div class="user-list" id="following-list"></div></div>
-        <div class="tab-content" id="tab-followers"><div class="user-list" id="followers-list"></div></div>
-        <div class="tab-content" id="tab-mutes"><div class="user-list" id="mutes-list"></div></div>
-        <div class="tab-content" id="tab-relays"><div class="relay-list" id="relays-list"></div></div>
+          <div class="tab-content active" id="tab-posts">
+            <div id="posts-list"></div>
+            <button id="btn-load-more" class="btn btn-block hidden">さらに読み込む</button>
+          </div>
+          <div class="tab-content" id="tab-following"><div class="user-list" id="following-list"></div></div>
+          <div class="tab-content" id="tab-followers"><div class="user-list" id="followers-list"></div></div>
+          <div class="tab-content" id="tab-mutes"><div class="user-list" id="mutes-list"></div></div>
+          <div class="tab-content" id="tab-relays"><div class="relay-list" id="relays-list"></div></div>
+        </section>
       </main>
     </div>
 
-    <script type="module" src="js/app.js"></script>
+    <div id="profile-edit-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="profile-edit-title">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 id="profile-edit-title">プロフィール編集</h2>
+          <button id="btn-close-edit" class="btn-icon" aria-label="閉じる">×</button>
+        </div>
+        <div class="form-grid">
+          <label>プロフィール画像URL<input id="edit-picture" type="url" autocomplete="off"></label>
+          <label>カバー画像URL<input id="edit-banner" type="url" autocomplete="off"></label>
+          <label>display_name<input id="edit-display-name" type="text" autocomplete="off"></label>
+          <label>name<input id="edit-name" type="text" autocomplete="off"></label>
+          <label>NIP-05<input id="edit-nip05" type="text" autocomplete="off"></label>
+          <label>about<textarea id="edit-about" rows="6"></textarea></label>
+        </div>
+        <div class="modal-actions">
+          <button id="btn-save-profile" class="btn btn-primary">保存してリレーへ送信</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="js/app.js?2026052404"></script>
   </body>
 </html>
