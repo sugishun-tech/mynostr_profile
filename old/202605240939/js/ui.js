@@ -71,7 +71,7 @@ export const UI = {
       if (window.loggedInPubkey && !isSelf) {
         const followBtn = document.createElement('button');
         followBtn.className = isFollowing ? 'btn btn-outline' : 'btn btn-primary';
-        followBtn.textContent = isFollowing ? 'アンフォロー' : 'フォロー';
+        followBtn.textContent = isFollowing ? 'Unfollow' : 'Follow';
         followBtn.onclick = async (e) => {
           e.preventDefault();
           e.stopPropagation();

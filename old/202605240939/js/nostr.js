@@ -75,8 +75,7 @@ export const NostrAPI = {
 
   getContactList: async (hex) => {
     try {
-      const events = await pool.querySync(getConfiguredRelays(), { kinds: [3], authors: [hex], limit: 50 });
-      return latestEvent(events);
+      return await pool.get(getConfiguredRelays(), { kinds: [3], authors: [hex] });
     } catch (e) {
       console.warn('contact list fetch failed', e);
       return null;

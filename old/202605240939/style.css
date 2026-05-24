@@ -189,7 +189,7 @@ body {
 .modal-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
 
 @media (max-width: 700px) {
-  .app-container { display: block; max-width: 100%; width: 100%; }
+  .app-container { display: block; max-width: 100%; }
   .sidebar { display: none !important; }
   .main-content { width: 100%; max-width: 100%; border: none; }
   .banner { height: 140px; }

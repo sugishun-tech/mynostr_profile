@@ -20,7 +20,6 @@ let profilePageLoaded = false;
 
 async function init() {
   setupEventListeners();
-  restoreSavedLoginPubkey();
   renderSettingsView();
 
   const urlParams = new URLSearchParams(window.location.search);
@@ -33,10 +32,6 @@ async function init() {
   if (!resolvedHex) {
     showOwnProfileLoginPrompt();
     return;
-  }
-
-  if (window.loggedInPubkey) {
-    await refreshLoggedInFollowingSet();
   }
 
   await loadProfilePage(resolvedHex);
@@ -78,14 +73,6 @@ async function tryGetLoggedInPubkey(showError = true) {
     if (showError) alert(e?.message ? `ログインに失敗しました: ${e.message}` : 'ログインに失敗しました');
     return null;
   }
-}
-
-
-function restoreSavedLoginPubkey() {
-  const saved = localStorage.getItem(LAST_LOGIN_PUBKEY_KEY) || '';
-  if (!/^[0-9a-f]{64}$/i.test(saved)) return;
-  window.loggedInPubkey = saved.toLowerCase();
-  renderLoggedInState();
 }
 
 function renderLoggedInState() {
@@ -298,10 +285,9 @@ async function updateProfileActionButtons() {
   }
 
   const isFollowing = loggedInFollowingSet.has(currentProfileHex) || await NostrAPI.isFollowing(window.loggedInPubkey, currentProfileHex);
-  if (isFollowing) loggedInFollowingSet.add(currentProfileHex);
   followBtn.classList.remove('hidden');
   followBtn.className = isFollowing ? 'btn btn-outline' : 'btn btn-primary';
-  followBtn.textContent = isFollowing ? 'アンフォロー' : 'フォロー';
+  followBtn.textContent = isFollowing ? 'Unfollow' : 'Follow';
   followBtn.onclick = async () => {
     followBtn.disabled = true;
     try {
