@@ -196,7 +196,8 @@ body {
   .icon { width: 96px; height: 96px; min-width: 96px; min-height: 96px; max-width: 96px; max-height: 96px; margin-top: -58px; }
   .profile-actions { top: 10px; right: 10px; }
   .btn { padding: 7px 12px; }
-  .post-time { display: none; }
+  .post-header { align-items: flex-start; }
+  .post-time { display: inline; font-size: 12px; margin-left: auto; flex-shrink: 0; }
 }
 
 .message-card {
