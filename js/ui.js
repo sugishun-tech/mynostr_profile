@@ -2,6 +2,19 @@ import { escapeHtml, formatJST } from './utils.js';
 import { CONFIG } from './config.js';
 import { NostrAPI } from './nostr.js';
 
+function followButtonsFor(pubkey) {
+  return [...document.querySelectorAll('[data-follow-pubkey]')]
+    .filter(button => button.dataset.followPubkey === pubkey);
+}
+
+function applyFollowButtonState(button, isFollowing) {
+  button.classList.remove('btn-primary', 'btn-outline');
+  button.classList.add(isFollowing ? 'btn-outline' : 'btn-primary');
+  button.textContent = isFollowing ? 'アンフォロー' : 'フォロー';
+  button.disabled = false;
+  button.setAttribute('aria-pressed', isFollowing ? 'true' : 'false');
+}
+
 export const UI = {
   renderNip05: async (nip05, pubkey, containerEl) => {
     if (!containerEl) return;
@@ -38,82 +51,135 @@ export const UI = {
     });
   },
 
-  renderUserList: async (pubkeys, containerId, followingSet = new Set()) => {
+  renderUserList: async (pubkeys, containerId, options = {}) => {
+    const {
+      followingSet = new Set(),
+      mutualSet = new Set(),
+      showMutual = false,
+      append = false,
+      profiles: suppliedProfiles = null,
+      onToggleFollow = null
+    } = options;
     const container = document.getElementById(containerId);
-    container.innerHTML = '';
+    if (!append) container.innerHTML = '';
+
     const uniquePubkeys = [...new Set(pubkeys || [])].filter(Boolean);
     if (uniquePubkeys.length === 0) {
-      container.innerHTML = "<p class='empty-message'>ユーザーがいません</p>";
+      if (!append) container.innerHTML = "<p class='empty-message'>ユーザーがいません</p>";
       return;
     }
 
-    const profiles = await NostrAPI.getProfilesBatch(uniquePubkeys);
+    const profiles = suppliedProfiles || await NostrAPI.getProfilesBatch(uniquePubkeys);
 
-    for (const pk of uniquePubkeys) {
-      const p = profiles[pk] || {};
-      const iconSrc = p.picture || CONFIG.FALLBACK_ICON;
-      const dName = escapeHtml(p.display_name || p.name || 'Unknown');
-      const name = escapeHtml(p.name ? `@${p.name}` : '');
-      const isSelf = window.loggedInPubkey === pk;
-      const isFollowing = followingSet.has(pk);
-      
-      const a = document.createElement('a');
-      a.className = 'user-item';
-      a.href = `?hex=${encodeURIComponent(pk)}`;
-      a.innerHTML = `
-        <img src="${escapeHtml(iconSrc)}" class="icon" alt="icon">
-        <div class="user-item-info">
-          <div class="user-item-name">${dName} <span class="nip05-status" data-nip05="${escapeHtml(p.nip05 || '')}" data-pk="${pk}"></span></div>
-          <div class="user-item-handle">${name}</div>
-        </div>
-      `;
-            
-      if (window.loggedInPubkey && !isSelf) {
-        const followBtn = document.createElement('button');
-        followBtn.className = isFollowing ? 'btn btn-outline' : 'btn btn-primary';
-        followBtn.textContent = isFollowing ? 'アンフォロー' : 'フォロー';
-        followBtn.onclick = async (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          followBtn.disabled = true;
-          try {
-            if (isFollowing) await NostrAPI.unfollowUser(pk);
-            else await NostrAPI.followUser(pk);
-            location.reload();
-          } catch (err) {
-            alert(err.message || '更新に失敗しました');
-            followBtn.disabled = false;
-          }
-        };
-        a.appendChild(followBtn);
+    for (const pubkey of uniquePubkeys) {
+      const profile = profiles[pubkey] || {};
+      const isSelf = window.loggedInPubkey === pubkey;
+      const isFollowing = followingSet.has(pubkey);
+
+      const row = document.createElement('div');
+      row.className = 'user-item';
+      row.dataset.pubkey = pubkey;
+
+      const profileLink = document.createElement('a');
+      profileLink.className = 'user-item-link';
+      profileLink.href = `?hex=${encodeURIComponent(pubkey)}`;
+
+      const icon = document.createElement('img');
+      icon.className = 'icon';
+      icon.alt = 'icon';
+      icon.src = profile.picture || CONFIG.FALLBACK_ICON;
+      icon.addEventListener('error', () => {
+        icon.src = CONFIG.FALLBACK_ICON;
+      }, { once: true });
+
+      const info = document.createElement('div');
+      info.className = 'user-item-info';
+
+      const nameLine = document.createElement('div');
+      nameLine.className = 'user-item-name';
+      nameLine.append(document.createTextNode(profile.display_name || profile.name || 'Unknown'));
+
+      const nip05Status = document.createElement('span');
+      nip05Status.className = 'nip05-status';
+      nameLine.append(document.createTextNode(' '), nip05Status);
+
+      if (showMutual) {
+        const mutualBadge = document.createElement('span');
+        mutualBadge.className = 'mutual-badge';
+        mutualBadge.dataset.mutualPubkey = pubkey;
+        mutualBadge.textContent = '相互';
+        mutualBadge.title = '相互フォロー';
+        mutualBadge.setAttribute('aria-label', '相互フォロー');
+        mutualBadge.classList.toggle('hidden', !mutualSet.has(pubkey));
+        nameLine.append(document.createTextNode(' '), mutualBadge);
       }
 
-      container.appendChild(a);
+      const handle = document.createElement('div');
+      handle.className = 'user-item-handle';
+      handle.textContent = profile.name ? `@${profile.name}` : '';
+
+      info.append(nameLine, handle);
+      profileLink.append(icon, info);
+      row.appendChild(profileLink);
+
+      if (window.loggedInPubkey && !isSelf && onToggleFollow) {
+        const followButton = document.createElement('button');
+        followButton.className = 'btn follow-toggle';
+        followButton.dataset.followPubkey = pubkey;
+        followButton.type = 'button';
+        applyFollowButtonState(followButton, isFollowing);
+        followButton.addEventListener('click', event => {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggleFollow(pubkey);
+        });
+        row.appendChild(followButton);
+      }
+
+      container.appendChild(row);
+
+      if (profile.nip05) {
+        NostrAPI.validateNip05(profile.nip05, pubkey).then(isValid => {
+          if (nip05Status.isConnected) nip05Status.textContent = isValid ? '✅' : '❌';
+        });
+      }
     }
+  },
 
-    container.querySelectorAll('.nip05-status').forEach(async el => {
-      const nip05 = el.getAttribute('data-nip05');
-      const pk = el.getAttribute('data-pk');
-      if (nip05) {
-        const isValid = await NostrAPI.validateNip05(nip05, pk);
-        el.textContent = isValid ? '✅' : '❌';
-      }
+  renderRelayList: (relaysDictOrArray, containerId, append = false) => {
+    const container = document.getElementById(containerId);
+    if (!append) container.innerHTML = '';
+    const relays = Array.isArray(relaysDictOrArray)
+      ? relaysDictOrArray
+      : Object.keys(relaysDictOrArray || {});
+    if (relays.length === 0) {
+      if (!append) container.innerHTML = "<p class='empty-message'>設定されていません</p>";
+      return;
+    }
+    relays.forEach(relay => {
+      const div = document.createElement('div');
+      div.className = 'relay-item';
+      div.textContent = relay;
+      container.appendChild(div);
     });
   },
 
-  renderRelayList: (relaysDictOrArray, containerId) => {
-    const container = document.getElementById(containerId);
-    container.innerHTML = '';
-    const relays = Array.isArray(relaysDictOrArray) ? relaysDictOrArray : Object.keys(relaysDictOrArray || {});
-    if (relays.length === 0) {
-      container.innerHTML = "<p class='empty-message'>設定されていません</p>";
-      return;
-    }
-    relays.forEach(r => {
-      const div = document.createElement('div');
-      div.className = 'relay-item';
-      div.textContent = r;
-      container.appendChild(div);
+  updateFollowButtons: (pubkey, isFollowing) => {
+    followButtonsFor(pubkey).forEach(button => applyFollowButtonState(button, isFollowing));
+  },
+
+  setFollowButtonsLoading: (pubkey, isLoading) => {
+    followButtonsFor(pubkey).forEach(button => {
+      button.disabled = isLoading;
+      if (isLoading) button.textContent = '更新中...';
+    });
+  },
+
+  updateMutualMarks: (pubkey, isMutual) => {
+    document.querySelectorAll('[data-mutual-pubkey]').forEach(mark => {
+      if (mark.dataset.mutualPubkey === pubkey) {
+        mark.classList.toggle('hidden', !isMutual);
+      }
     });
   }
 };

@@ -102,6 +102,112 @@ export const NostrAPI = {
     }
   },
 
+  getFollowersPage: async (hex, until = null, limit = 30, excludePubkeys = []) => {
+    try {
+      const pageSize = Math.max(1, Number(limit) || 30);
+      const queryLimit = Math.max(pageSize * 3, 100);
+      const seenPubkeys = new Set(excludePubkeys || []);
+      const pubkeys = [];
+      let cursor = Number.isFinite(until) ? until : null;
+      let nextUntil = cursor;
+      let hasMore = true;
+
+      // 同じ kind:3 が複数リレーに存在したり、同一ユーザーの古いイベントが
+      // 混ざったりするため、1回の問い合わせ結果がそのまま1ページになるとは限らない。
+      for (let attempt = 0; attempt < 12 && pubkeys.length < pageSize; attempt += 1) {
+        const filter = { kinds: [3], '#p': [hex], limit: queryLimit };
+        if (cursor !== null) filter.until = cursor;
+
+        const queried = await pool.querySync(getConfiguredRelays(), filter);
+        const events = [...new Map((queried || []).map(ev => [ev.id, ev])).values()]
+          .sort((a, b) => b.created_at - a.created_at);
+
+        if (events.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        let lastProcessedTime = null;
+        let stoppedBeforeBatchEnd = false;
+
+        for (let index = 0; index < events.length; index += 1) {
+          const event = events[index];
+          lastProcessedTime = event.created_at;
+
+          if (
+            event.tags?.some(tag => tag[0] === 'p' && tag[1] === hex)
+            && !seenPubkeys.has(event.pubkey)
+          ) {
+            seenPubkeys.add(event.pubkey);
+            pubkeys.push(event.pubkey);
+          }
+
+          if (pubkeys.length >= pageSize) {
+            stoppedBeforeBatchEnd = index < events.length - 1;
+            break;
+          }
+        }
+
+        if (lastProcessedTime === null || lastProcessedTime <= 0) {
+          hasMore = false;
+          break;
+        }
+
+        const newCursor = lastProcessedTime - 1;
+        if (cursor !== null && newCursor >= cursor) {
+          hasMore = false;
+          break;
+        }
+        nextUntil = newCursor;
+
+        if (pubkeys.length >= pageSize) {
+          hasMore = stoppedBeforeBatchEnd || events.length >= queryLimit;
+          break;
+        }
+
+        if (events.length < queryLimit) {
+          hasMore = false;
+          break;
+        }
+
+        cursor = newCursor;
+      }
+
+      return { pubkeys, nextUntil, hasMore };
+    } catch (e) {
+      console.warn('followers page fetch failed', e);
+      return { pubkeys: [], nextUntil: until, hasMore: false };
+    }
+  },
+
+  getFollowingBackSet: async (hex, candidatePubkeys) => {
+    const uniquePubkeys = [...new Set(candidatePubkeys || [])].filter(Boolean);
+    if (uniquePubkeys.length === 0) return new Set();
+
+    try {
+      const events = await pool.querySync(getConfiguredRelays(), {
+        kinds: [3],
+        authors: uniquePubkeys
+      });
+      const latestByAuthor = new Map();
+
+      for (const event of events || []) {
+        const current = latestByAuthor.get(event.pubkey);
+        if (!current || event.created_at > current.created_at) {
+          latestByAuthor.set(event.pubkey, event);
+        }
+      }
+
+      return new Set(
+        uniquePubkeys.filter(pubkey => latestByAuthor.get(pubkey)?.tags
+          ?.some(tag => tag[0] === 'p' && tag[1] === hex))
+      );
+    } catch (e) {
+      console.warn('following-back check failed', e);
+      return new Set();
+    }
+  },
+
   getFollowingSet: async (hex) => {
     const ev = await NostrAPI.getContactList(hex);
     return new Set((ev?.tags || []).filter(t => t[0] === 'p').map(t => t[1]));

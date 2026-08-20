@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nostr Profile Viewer</title>
-    <link rel="stylesheet" href="style.css?2026052406">
+    <link rel="stylesheet" href="style.css?2026082001">
   </head>
   <body>
     <div class="app-container">
@@ -76,10 +76,22 @@
             <div id="posts-list"></div>
             <button id="btn-load-more" class="btn btn-block hidden">さらに読み込む</button>
           </div>
-          <div class="tab-content" id="tab-following"><div class="user-list" id="following-list"></div></div>
-          <div class="tab-content" id="tab-followers"><div class="user-list" id="followers-list"></div></div>
-          <div class="tab-content" id="tab-mutes"><div class="user-list" id="mutes-list"></div></div>
-          <div class="tab-content" id="tab-relays"><div class="relay-list" id="relays-list"></div></div>
+          <div class="tab-content" id="tab-following">
+            <div class="user-list" id="following-list"></div>
+            <button id="btn-load-more-following" class="btn btn-block hidden">さらに読み込む</button>
+          </div>
+          <div class="tab-content" id="tab-followers">
+            <div class="user-list" id="followers-list"></div>
+            <button id="btn-load-more-followers" class="btn btn-block hidden">さらに読み込む</button>
+          </div>
+          <div class="tab-content" id="tab-mutes">
+            <div class="user-list" id="mutes-list"></div>
+            <button id="btn-load-more-mutes" class="btn btn-block hidden">さらに読み込む</button>
+          </div>
+          <div class="tab-content" id="tab-relays">
+            <div class="relay-list" id="relays-list"></div>
+            <button id="btn-load-more-relays" class="btn btn-block hidden">さらに読み込む</button>
+          </div>
         </section>
       </main>
     </div>
@@ -104,6 +116,6 @@
       </div>
     </div>
 
-    <script type="module" src="js/app.js?2026052406"></script>
+    <script type="module" src="js/app.js?2026082001"></script>
   </body>
 </html>

@@ -15,8 +15,47 @@ window.loggedInPubkey = null;
 let currentProfileHex = null;
 let profileData = null;
 let oldestPostTime = null;
-let loggedInFollowingSet = new Set();
-let profilePageLoaded = false;
+let listLoadToken = 0;
+
+const loggedInFollowingSet = new Set();
+const currentProfileFollowingSet = new Set();
+const currentProfileFollowerSet = new Set();
+const pendingFollowPubkeys = new Set();
+
+const localListStates = {
+  following: {
+    items: [],
+    offset: 0,
+    loading: false,
+    containerId: 'following-list',
+    buttonId: 'btn-load-more-following',
+    showMutual: true
+  },
+  mutes: {
+    items: [],
+    offset: 0,
+    loading: false,
+    containerId: 'mutes-list',
+    buttonId: 'btn-load-more-mutes',
+    showMutual: false
+  },
+  relays: {
+    items: [],
+    offset: 0,
+    loading: false,
+    containerId: 'relays-list',
+    buttonId: 'btn-load-more-relays'
+  }
+};
+
+const followersState = {
+  cursor: null,
+  loadedPubkeys: new Set(),
+  loading: false,
+  exhausted: false,
+  containerId: 'followers-list',
+  buttonId: 'btn-load-more-followers'
+};
 
 async function init() {
   setupEventListeners();
@@ -55,8 +94,8 @@ async function resolveProfileHex(urlParams) {
   // ?view=me は「ログイン中の自分」を明示するルート。
   // ?hex は他人を見るために残す。クエリがない場合も、NIP-07 が許せば自分を開く。
   if (wantsMe || !explicitHex) {
-    const pk = await tryGetLoggedInPubkey(false);
-    if (pk) return pk;
+    const pubkey = await tryGetLoggedInPubkey(false);
+    if (pubkey) return pubkey;
   }
 
   return null;
@@ -73,13 +112,14 @@ async function tryGetLoggedInPubkey(showError = true) {
     localStorage.setItem(LAST_LOGIN_PUBKEY_KEY, window.loggedInPubkey);
     renderLoggedInState();
     return window.loggedInPubkey;
-  } catch (e) {
-    console.warn('getPublicKey failed', e);
-    if (showError) alert(e?.message ? `ログインに失敗しました: ${e.message}` : 'ログインに失敗しました');
+  } catch (error) {
+    console.warn('getPublicKey failed', error);
+    if (showError) {
+      alert(error?.message ? `ログインに失敗しました: ${error.message}` : 'ログインに失敗しました');
+    }
     return null;
   }
 }
-
 
 function restoreSavedLoginPubkey() {
   const saved = localStorage.getItem(LAST_LOGIN_PUBKEY_KEY) || '';
@@ -116,13 +156,13 @@ function showOwnProfileLoginPrompt() {
     btn.disabled = true;
     btn.textContent = 'ログイン中...';
     try {
-      const pk = await tryGetLoggedInPubkey(true);
-      if (!pk) return;
+      const pubkey = await tryGetLoggedInPubkey(true);
+      if (!pubkey) return;
       await refreshLoggedInFollowingSet();
       history.replaceState(null, '', '?view=me');
       startPage?.classList.add('hidden');
       profilePage?.classList.remove('hidden');
-      await loadProfilePage(pk);
+      await loadProfilePage(pubkey);
     } finally {
       btn.disabled = false;
       btn.textContent = 'ログインして自分のプロフィールを表示';
@@ -132,7 +172,6 @@ function showOwnProfileLoginPrompt() {
 
 async function loadProfilePage(hex) {
   currentProfileHex = hex;
-  profilePageLoaded = true;
   oldestPostTime = null;
 
   document.getElementById('settings-page')?.classList.add('hidden');
@@ -141,7 +180,7 @@ async function loadProfilePage(hex) {
 
   await loadProfile();
   await loadInitialPosts();
-  loadLists();
+  void loadLists();
 }
 
 function showSettingsPage() {
@@ -160,33 +199,33 @@ function renderSettingsView() {
 
 async function loadProfile() {
   profileData = await NostrAPI.getProfile(currentProfileHex);
-  const p = profileData || {};
+  const profile = profileData || {};
 
   const icon = document.getElementById('profile-icon');
-  icon.src = p.picture || CONFIG.FALLBACK_ICON;
+  icon.src = profile.picture || CONFIG.FALLBACK_ICON;
   icon.onerror = () => { icon.src = CONFIG.FALLBACK_ICON; };
 
-  document.getElementById('profile-display-name').textContent = p.display_name || p.name || 'Unknown';
-  document.getElementById('profile-name').textContent = p.name || '';
+  document.getElementById('profile-display-name').textContent = profile.display_name || profile.name || 'Unknown';
+  document.getElementById('profile-name').textContent = profile.name || '';
   const aboutEl = document.getElementById('profile-about');
-  aboutEl.textContent = p.about || '';
+  aboutEl.textContent = profile.about || '';
   setupAboutExpansion();
-  
+
   const banner = document.getElementById('profile-banner');
   banner.style.backgroundImage = '';
-  if (p.banner) {
-    banner.style.backgroundImage = `url('${p.banner.replace(/'/g, "%27")}')`;
+  if (profile.banner) {
+    banner.style.backgroundImage = `url('${profile.banner.replace(/'/g, '%27')}')`;
   } else {
     banner.style.backgroundColor = CONFIG.FALLBACK_BANNER_COLOR;
   }
 
-  await UI.renderNip05(p.nip05, currentProfileHex, document.getElementById('profile-nip05'));
+  await UI.renderNip05(profile.nip05, currentProfileHex, document.getElementById('profile-nip05'));
 
   const npub = NostrAPI.hexToNpub(currentProfileHex);
   document.getElementById('btn-copy-npub').onclick = () => copyToClipboard(npub);
   document.getElementById('btn-copy-hex').onclick = () => copyToClipboard(currentProfileHex);
 
-  updateProfileActionButtons();
+  await updateProfileActionButtons();
 }
 
 function setupAboutExpansion() {
@@ -212,74 +251,296 @@ function setupAboutExpansion() {
 
 async function loadInitialPosts() {
   const list = document.getElementById('posts-list');
+  const button = document.getElementById('btn-load-more');
   list.innerHTML = '';
-  document.getElementById('btn-load-more').classList.add('hidden');
+  button.classList.add('hidden');
 
   const posts = await NostrAPI.getPosts(currentProfileHex, null, CONFIG.POSTS_PER_PAGE);
   await UI.renderPosts(posts, 'posts-list', profileData, false);
-  
+
   if (posts.length > 0) {
     oldestPostTime = posts[posts.length - 1].created_at;
-    document.getElementById('btn-load-more').classList.remove('hidden');
+    button.classList.remove('hidden');
   }
 }
 
 async function loadMorePosts() {
   if (!oldestPostTime) return;
-  const btn = document.getElementById('btn-load-more');
-  btn.textContent = '読み込み中...';
-  btn.disabled = true;
-  
-  const posts = await NostrAPI.getPosts(currentProfileHex, oldestPostTime - 1, CONFIG.POSTS_PER_PAGE);
-  await UI.renderPosts(posts, 'posts-list', profileData, true);
-  
-  if (posts.length > 0) {
-    oldestPostTime = posts[posts.length - 1].created_at;
-    btn.textContent = 'さらに読み込む';
-    btn.disabled = false;
-  } else {
-    btn.classList.add('hidden');
+  const button = document.getElementById('btn-load-more');
+  button.textContent = '読み込み中...';
+  button.disabled = true;
+
+  try {
+    const posts = await NostrAPI.getPosts(
+      currentProfileHex,
+      oldestPostTime - 1,
+      CONFIG.POSTS_PER_PAGE
+    );
+    await UI.renderPosts(posts, 'posts-list', profileData, true);
+
+    if (posts.length > 0) {
+      oldestPostTime = posts[posts.length - 1].created_at;
+      button.textContent = 'さらに読み込む';
+      button.disabled = false;
+    } else {
+      button.classList.add('hidden');
+    }
+  } catch (error) {
+    console.error('post page load failed', error);
+    button.textContent = 'さらに読み込む';
+    button.disabled = false;
+    alert('投稿の読み込みに失敗しました');
   }
 }
 
+function replaceSet(target, values) {
+  target.clear();
+  for (const value of values || []) target.add(value);
+}
+
+function uniqueValues(values) {
+  return [...new Set(values || [])].filter(Boolean);
+}
+
+function setContainerMessage(containerId, message) {
+  const container = document.getElementById(containerId);
+  if (container) container.innerHTML = `<p class="message">${message}</p>`;
+}
+
+function setPaginationButton(buttonId, hasMore, loading = false) {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
+  button.classList.toggle('hidden', !hasMore && !loading);
+  button.disabled = loading;
+  button.textContent = loading ? '読み込み中...' : 'さらに読み込む';
+}
+
+function resetListStates() {
+  for (const state of Object.values(localListStates)) {
+    state.items = [];
+    state.offset = 0;
+    state.loading = false;
+    setContainerMessage(state.containerId, '読み込み中...');
+    setPaginationButton(state.buttonId, false);
+  }
+
+  followersState.cursor = null;
+  followersState.loadedPubkeys.clear();
+  followersState.loading = false;
+  followersState.exhausted = false;
+  setContainerMessage(followersState.containerId, '読み込み中...');
+  setPaginationButton(followersState.buttonId, false);
+
+  currentProfileFollowingSet.clear();
+  currentProfileFollowerSet.clear();
+}
+
 async function loadLists() {
-  const contactEvent = await NostrAPI.getContactList(currentProfileHex);
+  const token = ++listLoadToken;
+  resetListStates();
+
+  const [contactEvent, muteEvent] = await Promise.all([
+    NostrAPI.getContactList(currentProfileHex),
+    NostrAPI.getMuteList(currentProfileHex)
+  ]);
+  if (token !== listLoadToken) return;
+
   if (contactEvent) {
-    const follows = contactEvent.tags.filter(t => t[0] === 'p').map(t => t[1]);
-    UI.renderUserList(follows, 'following-list', loggedInFollowingSet);
+    localListStates.following.items = uniqueValues(
+      contactEvent.tags.filter(tag => tag[0] === 'p').map(tag => tag[1])
+    );
+    replaceSet(currentProfileFollowingSet, localListStates.following.items);
+
     try {
       const relays = JSON.parse(contactEvent.content || '{}');
-      UI.renderRelayList(relays, 'relays-list');
-    } catch(e) {
-      UI.renderRelayList([], 'relays-list');
+      localListStates.relays.items = Array.isArray(relays)
+        ? uniqueValues(relays)
+        : uniqueValues(Object.keys(relays || {}));
+    } catch (error) {
+      console.warn('relay list parse failed', error);
+      localListStates.relays.items = [];
     }
-  } else {
-    document.getElementById('following-list').innerHTML = "<p class='empty-message'>データなし</p>";
-    UI.renderRelayList([], 'relays-list');
   }
 
-  const muteEvent = await NostrAPI.getMuteList(currentProfileHex);
   if (muteEvent) {
-    const mutes = muteEvent.tags.filter(t => t[0] === 'p').map(t => t[1]);
-    UI.renderUserList(mutes, 'mutes-list', loggedInFollowingSet);
-  } else {
-    document.getElementById('mutes-list').innerHTML = "<p class='empty-message'>データなし</p>";
+    localListStates.mutes.items = uniqueValues(
+      muteEvent.tags.filter(tag => tag[0] === 'p').map(tag => tag[1])
+    );
   }
 
-  const followers = await NostrAPI.getFollowers(currentProfileHex);
-  UI.renderUserList(followers, 'followers-list', loggedInFollowingSet);
+  await Promise.all([
+    loadMoreLocalUserList('following', token),
+    loadMoreFollowers(token),
+    loadMoreLocalUserList('mutes', token)
+  ]);
+  if (token !== listLoadToken) return;
+  loadMoreRelays(token);
+}
+
+async function loadMoreLocalUserList(listName, token = listLoadToken) {
+  const state = localListStates[listName];
+  if (!state || state.loading || token !== listLoadToken) return;
+
+  const page = state.items.slice(
+    state.offset,
+    state.offset + CONFIG.LIST_ITEMS_PER_PAGE
+  );
+  const append = state.offset > 0;
+
+  if (page.length === 0) {
+    await UI.renderUserList([], state.containerId, { append });
+    setPaginationButton(state.buttonId, false);
+    return;
+  }
+
+  state.loading = true;
+  if (append) setPaginationButton(state.buttonId, true, true);
+
+  try {
+    const [profiles, mutualSet] = await Promise.all([
+      NostrAPI.getProfilesBatch(page),
+      listName === 'following'
+        ? NostrAPI.getFollowingBackSet(currentProfileHex, page)
+        : Promise.resolve(new Set())
+    ]);
+    if (token !== listLoadToken) return;
+
+    for (const pubkey of mutualSet) currentProfileFollowerSet.add(pubkey);
+
+    await UI.renderUserList(page, state.containerId, {
+      followingSet: loggedInFollowingSet,
+      mutualSet,
+      showMutual: state.showMutual,
+      append,
+      profiles,
+      onToggleFollow: toggleFollow
+    });
+    state.offset += page.length;
+    setPaginationButton(state.buttonId, state.offset < state.items.length);
+  } catch (error) {
+    console.error(`${listName} page load failed`, error);
+    if (!append) setContainerMessage(state.containerId, '読み込みに失敗しました');
+    setPaginationButton(state.buttonId, state.offset < state.items.length);
+  } finally {
+    if (token === listLoadToken) state.loading = false;
+  }
+}
+
+async function loadMoreFollowers(token = listLoadToken) {
+  const state = followersState;
+  if (state.loading || state.exhausted || token !== listLoadToken) return;
+
+  const append = state.loadedPubkeys.size > 0;
+  state.loading = true;
+  if (append) setPaginationButton(state.buttonId, true, true);
+
+  try {
+    const pageResult = await NostrAPI.getFollowersPage(
+      currentProfileHex,
+      state.cursor,
+      CONFIG.LIST_ITEMS_PER_PAGE,
+      state.loadedPubkeys
+    );
+    if (token !== listLoadToken) return;
+
+    const page = uniqueValues(pageResult.pubkeys)
+      .filter(pubkey => !state.loadedPubkeys.has(pubkey));
+    const profiles = page.length > 0
+      ? await NostrAPI.getProfilesBatch(page)
+      : {};
+    if (token !== listLoadToken) return;
+
+    const mutualSet = new Set(
+      page.filter(pubkey => currentProfileFollowingSet.has(pubkey))
+    );
+
+    for (const pubkey of page) {
+      state.loadedPubkeys.add(pubkey);
+      currentProfileFollowerSet.add(pubkey);
+      if (currentProfileFollowingSet.has(pubkey)) {
+        UI.updateMutualMarks(pubkey, true);
+      }
+    }
+
+    await UI.renderUserList(page, state.containerId, {
+      followingSet: loggedInFollowingSet,
+      mutualSet,
+      showMutual: true,
+      append,
+      profiles,
+      onToggleFollow: toggleFollow
+    });
+
+    state.cursor = pageResult.nextUntil;
+    state.exhausted = !pageResult.hasMore;
+    setPaginationButton(state.buttonId, !state.exhausted);
+  } catch (error) {
+    console.error('followers page load failed', error);
+    if (!append) setContainerMessage(state.containerId, '読み込みに失敗しました');
+    setPaginationButton(state.buttonId, true);
+  } finally {
+    if (token === listLoadToken) state.loading = false;
+  }
+}
+
+function loadMoreRelays(token = listLoadToken) {
+  const state = localListStates.relays;
+  if (state.loading || token !== listLoadToken) return;
+
+  const page = state.items.slice(
+    state.offset,
+    state.offset + CONFIG.LIST_ITEMS_PER_PAGE
+  );
+  const append = state.offset > 0;
+
+  UI.renderRelayList(page, state.containerId, append);
+  state.offset += page.length;
+  setPaginationButton(state.buttonId, state.offset < state.items.length);
 }
 
 async function refreshLoggedInFollowingSet() {
   if (!window.loggedInPubkey) {
-    loggedInFollowingSet = new Set();
+    loggedInFollowingSet.clear();
     return;
   }
+
   try {
-    loggedInFollowingSet = await NostrAPI.getFollowingSet(window.loggedInPubkey);
-  } catch (e) {
-    console.warn('following list load failed after login', e);
-    loggedInFollowingSet = new Set();
+    const following = await NostrAPI.getFollowingSet(window.loggedInPubkey);
+    replaceSet(loggedInFollowingSet, following);
+  } catch (error) {
+    console.warn('following list load failed after login', error);
+    loggedInFollowingSet.clear();
+  }
+}
+
+async function toggleFollow(targetHex) {
+  if (!window.loggedInPubkey || !targetHex || pendingFollowPubkeys.has(targetHex)) return;
+
+  const wasFollowing = loggedInFollowingSet.has(targetHex);
+  const shouldFollow = !wasFollowing;
+  pendingFollowPubkeys.add(targetHex);
+  UI.setFollowButtonsLoading(targetHex, true);
+
+  try {
+    await NostrAPI.setFollow(targetHex, shouldFollow);
+
+    if (shouldFollow) loggedInFollowingSet.add(targetHex);
+    else loggedInFollowingSet.delete(targetHex);
+    UI.updateFollowButtons(targetHex, shouldFollow);
+
+    if (window.loggedInPubkey === currentProfileHex) {
+      if (shouldFollow) currentProfileFollowingSet.add(targetHex);
+      else currentProfileFollowingSet.delete(targetHex);
+      UI.updateMutualMarks(
+        targetHex,
+        shouldFollow && currentProfileFollowerSet.has(targetHex)
+      );
+    }
+  } catch (error) {
+    UI.updateFollowButtons(targetHex, wasFollowing);
+    alert(error.message || 'フォロー状態の更新に失敗しました');
+  } finally {
+    pendingFollowPubkeys.delete(targetHex);
   }
 }
 
@@ -288,6 +549,8 @@ async function updateProfileActionButtons() {
   const editBtn = document.getElementById('btn-edit-profile');
   followBtn.classList.add('hidden');
   editBtn.classList.add('hidden');
+  followBtn.onclick = null;
+  delete followBtn.dataset.followPubkey;
 
   if (!window.loggedInPubkey || !currentProfileHex) return;
 
@@ -297,35 +560,30 @@ async function updateProfileActionButtons() {
     return;
   }
 
-  const isFollowing = loggedInFollowingSet.has(currentProfileHex) || await NostrAPI.isFollowing(window.loggedInPubkey, currentProfileHex);
-  if (isFollowing) loggedInFollowingSet.add(currentProfileHex);
-  followBtn.classList.remove('hidden');
-  followBtn.className = isFollowing ? 'btn btn-outline' : 'btn btn-primary';
-  followBtn.textContent = isFollowing ? 'アンフォロー' : 'フォロー';
-  followBtn.onclick = async () => {
-    followBtn.disabled = true;
+  let isFollowing = loggedInFollowingSet.has(currentProfileHex);
+  if (!isFollowing) {
     try {
-      if (isFollowing) await NostrAPI.unfollowUser(currentProfileHex);
-      else await NostrAPI.followUser(currentProfileHex);
-      await refreshLoggedInFollowingSet();
-      await updateProfileActionButtons();
-      loadLists();
-    } catch (e) {
-      alert(e.message || 'フォロー状態の更新に失敗しました');
-    } finally {
-      followBtn.disabled = false;
+      isFollowing = await NostrAPI.isFollowing(window.loggedInPubkey, currentProfileHex);
+      if (isFollowing) loggedInFollowingSet.add(currentProfileHex);
+    } catch (error) {
+      console.warn('profile follow status check failed', error);
     }
-  };
+  }
+
+  followBtn.dataset.followPubkey = currentProfileHex;
+  followBtn.classList.remove('hidden');
+  UI.updateFollowButtons(currentProfileHex, isFollowing);
+  followBtn.onclick = () => toggleFollow(currentProfileHex);
 }
 
 function openEditModal() {
-  const p = profileData || {};
-  document.getElementById('edit-picture').value = p.picture || '';
-  document.getElementById('edit-banner').value = p.banner || '';
-  document.getElementById('edit-display-name').value = p.display_name || '';
-  document.getElementById('edit-name').value = p.name || '';
-  document.getElementById('edit-nip05').value = p.nip05 || '';
-  document.getElementById('edit-about').value = p.about || '';
+  const profile = profileData || {};
+  document.getElementById('edit-picture').value = profile.picture || '';
+  document.getElementById('edit-banner').value = profile.banner || '';
+  document.getElementById('edit-display-name').value = profile.display_name || '';
+  document.getElementById('edit-name').value = profile.name || '';
+  document.getElementById('edit-nip05').value = profile.nip05 || '';
+  document.getElementById('edit-about').value = profile.about || '';
   document.getElementById('profile-edit-modal').classList.remove('hidden');
 }
 
@@ -349,8 +607,8 @@ async function saveProfile() {
     closeEditModal();
     await loadProfile();
     alert('プロフィールを保存しました');
-  } catch (e) {
-    alert(e.message || 'プロフィール保存に失敗しました');
+  } catch (error) {
+    alert(error.message || 'プロフィール保存に失敗しました');
   } finally {
     btn.disabled = false;
     btn.textContent = '保存してリレーへ送信';
@@ -360,23 +618,27 @@ async function saveProfile() {
 function setupEventListeners() {
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.onclick = () => {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById(btn.getAttribute('data-target')).classList.add('active');
     };
   });
 
   document.getElementById('btn-load-more').onclick = loadMorePosts;
+  document.getElementById('btn-load-more-following').onclick = () => loadMoreLocalUserList('following');
+  document.getElementById('btn-load-more-followers').onclick = () => loadMoreFollowers();
+  document.getElementById('btn-load-more-mutes').onclick = () => loadMoreLocalUserList('mutes');
+  document.getElementById('btn-load-more-relays').onclick = () => loadMoreRelays();
 
   const myProfileBtn = document.getElementById('btn-open-my-profile');
   if (myProfileBtn) {
     myProfileBtn.onclick = async () => {
-      const pk = await tryGetLoggedInPubkey(true);
-      if (!pk) return;
+      const pubkey = await tryGetLoggedInPubkey(true);
+      if (!pubkey) return;
       await refreshLoggedInFollowingSet();
       history.replaceState(null, '', '?view=me');
-      await loadProfilePage(pk);
+      await loadProfilePage(pubkey);
     };
   }
 
@@ -395,14 +657,14 @@ function setupEventListeners() {
 
   document.getElementById('btn-close-edit').onclick = closeEditModal;
   document.getElementById('btn-save-profile').onclick = saveProfile;
-  document.getElementById('profile-edit-modal').onclick = (e) => {
-    if (e.target.id === 'profile-edit-modal') closeEditModal();
+  document.getElementById('profile-edit-modal').onclick = event => {
+    if (event.target.id === 'profile-edit-modal') closeEditModal();
   };
 
   const loginBtn = document.getElementById('btn-login');
   loginBtn.onclick = async () => {
-    const pk = await tryGetLoggedInPubkey(true);
-    if (!pk) return;
+    const pubkey = await tryGetLoggedInPubkey(true);
+    if (!pubkey) return;
 
     // ログイン自体と、リレーからのフォローリスト取得を分離する。
     // リレーが落ちているだけでログイン失敗扱いにするのは、UIとして普通に地雷。
@@ -410,12 +672,12 @@ function setupEventListeners() {
 
     if (!currentProfileHex) {
       history.replaceState(null, '', '?view=me');
-      await loadProfilePage(pk);
+      await loadProfilePage(pubkey);
       return;
     }
 
     await updateProfileActionButtons();
-    loadLists();
+    void loadLists();
   };
 }
 
