@@ -1,6 +1,6 @@
-import { escapeHtml, formatJST } from './utils.js';
-import { CONFIG } from './config.js';
-import { NostrAPI } from './nostr.js';
+import { escapeHtml, formatJST } from './utils.js?v=2026082502';
+import { CONFIG } from './config.js?v=2026082502';
+import { NostrAPI } from './nostr.js?v=2026082502';
 
 function followButtonsFor(pubkey) {
   return [...document.querySelectorAll('[data-follow-pubkey]')]

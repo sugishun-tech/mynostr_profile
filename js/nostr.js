@@ -1,13 +1,193 @@
-import { SimplePool, nip19 } from 'https://esm.sh/nostr-tools@2.7.0';
-import { getConfiguredRelays } from './utils.js';
+import { getConfiguredRelays } from './utils.js?v=2026082502';
 
-const pool = new SimplePool();
+const NOSTR_TOOLS_SOURCES = [
+  'https://cdn.jsdelivr.net/npm/nostr-tools@2.7.0/lib/nostr.bundle.js',
+  'https://unpkg.com/nostr-tools@2.7.0/lib/nostr.bundle.js'
+];
+
+let pool = null;
+let nip19 = null;
+
+function isUsableNostrTools(value) {
+  return Boolean(
+    value
+    && typeof value.SimplePool === 'function'
+    && typeof value.nip19?.npubEncode === 'function'
+    && typeof value.nip19?.decode === 'function'
+  );
+}
+
+function loadClassicScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.crossOrigin = 'anonymous';
+    script.dataset.nostrToolsSource = src;
+    script.onload = () => resolve();
+    script.onerror = () => {
+      script.remove();
+      reject(new Error(`スクリプトを読み込めませんでした: ${src}`));
+    };
+    document.head.appendChild(script);
+  });
+}
+
+async function loadNostrTools() {
+  if (isUsableNostrTools(globalThis.NostrTools)) return globalThis.NostrTools;
+
+  const failures = [];
+  for (const src of NOSTR_TOOLS_SOURCES) {
+    try {
+      await loadClassicScript(src);
+      if (isUsableNostrTools(globalThis.NostrTools)) return globalThis.NostrTools;
+      throw new Error(`NostrTools グローバルが作成されませんでした: ${src}`);
+    } catch (error) {
+      failures.push(error);
+      console.warn('nostr-tools load failed; trying fallback', src, error);
+    }
+  }
+
+  const error = new Error(
+    'Nostrライブラリを読み込めませんでした。CDNへの接続、広告ブロッカー、ネットワーク設定を確認してください。'
+  );
+  error.cause = failures.at(-1);
+  throw error;
+}
+
+const runtimePromise = typeof document === 'undefined'
+  ? Promise.resolve()
+  : loadNostrTools().then(tools => {
+      pool = new tools.SimplePool();
+      nip19 = tools.nip19;
+    });
+
+async function ensureRuntime() {
+  await runtimePromise;
+  if (!pool || !nip19) {
+    throw new Error('Nostrランタイムが初期化されていません');
+  }
+}
+
+function requireNip19() {
+  if (!nip19) throw new Error('Nostrランタイムの初期化前です');
+  return nip19;
+}
+
+export function normalizePageSize(value, fallback = 30) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
+
+export function sortUniqueEvents(events) {
+  const byId = new Map();
+
+  for (const event of events || []) {
+    if (
+      !event
+      || typeof event.id !== 'string'
+      || event.id.length === 0
+      || !Number.isFinite(event.created_at)
+    ) {
+      continue;
+    }
+
+    if (!byId.has(event.id)) byId.set(event.id, event);
+  }
+
+  return [...byId.values()].sort((left, right) => {
+    const timeDifference = right.created_at - left.created_at;
+    return timeDifference || left.id.localeCompare(right.id);
+  });
+}
+
+export function buildEventPage(events, pageSize, excludeIds = []) {
+  const size = normalizePageSize(pageSize);
+  const excluded = excludeIds instanceof Set ? excludeIds : new Set(excludeIds || []);
+  const ordered = sortUniqueEvents(events);
+  const unseen = ordered.filter(event => !excluded.has(event.id));
+  const posts = unseen.slice(0, size);
+
+  return {
+    posts,
+    orderedCount: ordered.length,
+    unseenCount: unseen.length,
+    nextUntil: posts.length > 0 ? posts[posts.length - 1].created_at : null,
+    oldestFetchedTime: ordered.length > 0 ? ordered[ordered.length - 1].created_at : null
+  };
+}
+
+export async function fetchPostPage(queryEvents, options) {
+  const {
+    hex,
+    until = null,
+    limit = 30,
+    excludeIds = [],
+    minimumQueryLimit = 120,
+    maximumQueryLimit = 960,
+    maximumAttempts = 8
+  } = options || {};
+
+  const pageSize = normalizePageSize(limit);
+  const excluded = excludeIds instanceof Set ? excludeIds : new Set(excludeIds || []);
+  let cursor = Number.isFinite(until) ? Math.floor(until) : null;
+  let queryLimit = Math.max(pageSize * 4, minimumQueryLimit);
+
+  // Nostr の limit はリレーごとに適用される。複数リレーの結果をそのまま
+  // 1ページとして扱うと、保存範囲の疎なリレーが返した古いイベントまで
+  // カーソルが進み、中間の投稿を飛ばす。統合・整列後に pageSize 件へ絞る。
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    const filter = { kinds: [1], authors: [hex], limit: queryLimit };
+    if (cursor !== null) filter.until = cursor;
+
+    const queried = await queryEvents(filter);
+    const page = buildEventPage(queried, pageSize, excluded);
+
+    if (page.posts.length > 0) {
+      return {
+        posts: page.posts,
+        nextUntil: page.nextUntil,
+        hasMore: (
+          page.unseenCount > pageSize
+          || page.posts.length === pageSize
+          || page.orderedCount >= queryLimit
+        )
+      };
+    }
+
+    if (page.orderedCount === 0) {
+      return { posts: [], nextUntil: cursor, hasMore: false };
+    }
+
+    // 境界秒の既表示イベントが上限を埋めた場合は、同じ秒を捨てずに
+    // 取得上限を広げる。秒単位カーソルによる取りこぼしを防ぐ。
+    if (page.orderedCount >= queryLimit && queryLimit < maximumQueryLimit) {
+      queryLimit = Math.min(maximumQueryLimit, queryLimit * 2);
+      continue;
+    }
+
+    const baseTime = cursor === null
+      ? page.oldestFetchedTime
+      : Math.min(cursor, page.oldestFetchedTime);
+    const nextCursor = baseTime - 1;
+
+    if (!Number.isFinite(nextCursor) || nextCursor < 0 || (cursor !== null && nextCursor >= cursor)) {
+      return { posts: [], nextUntil: cursor, hasMore: false };
+    }
+
+    cursor = nextCursor;
+  }
+
+  return { posts: [], nextUntil: cursor, hasMore: false };
+}
 
 function latestEvent(events) {
-  return [...events].sort((a, b) => b.created_at - a.created_at)[0] || null;
+  return sortUniqueEvents(events)[0] || null;
 }
 
 async function publishToConfiguredRelays(event) {
+  await ensureRuntime();
   const relays = getConfiguredRelays();
   const results = await Promise.allSettled(pool.publish(relays, event));
   const success = results.filter(r => r.status === 'fulfilled').length;
@@ -16,10 +196,12 @@ async function publishToConfiguredRelays(event) {
 }
 
 export const NostrAPI = {
-  hexToNpub: (hex) => nip19.npubEncode(hex),
+  ready: () => ensureRuntime(),
+
+  hexToNpub: (hex) => requireNip19().npubEncode(hex),
 
   npubToHex: (npub) => {
-    const decoded = nip19.decode(npub);
+    const decoded = requireNip19().decode(npub);
     if (decoded.type !== 'npub') throw new Error('npub形式が不正です');
     return decoded.data;
   },
@@ -27,6 +209,7 @@ export const NostrAPI = {
   getRelays: () => getConfiguredRelays(),
 
   getProfileEvent: async (hex) => {
+    await ensureRuntime();
     return await pool.get(getConfiguredRelays(), { kinds: [0], authors: [hex] });
   },
   
@@ -41,6 +224,7 @@ export const NostrAPI = {
   },
 
   getProfilesBatch: async (pubkeys) => {
+    await ensureRuntime();
     const uniquePubkeys = [...new Set(pubkeys || [])].filter(Boolean);
     if (uniquePubkeys.length === 0) return {};
     const events = await pool.querySync(getConfiguredRelays(), { kinds: [0], authors: uniquePubkeys });
@@ -65,15 +249,22 @@ export const NostrAPI = {
     }
   },
 
+  getPostsPage: async (hex, until = null, limit = 30, excludeIds = []) => {
+    await ensureRuntime();
+    const relays = getConfiguredRelays();
+    return await fetchPostPage(
+      filter => pool.querySync(relays, filter),
+      { hex, until, limit, excludeIds }
+    );
+  },
+
   getPosts: async (hex, until, limit) => {
-    const filter = { kinds: [1], authors: [hex], limit };
-    if (until) filter.until = until;
-    const posts = await pool.querySync(getConfiguredRelays(), filter);
-    const byId = new Map(posts.map(post => [post.id, post]));
-    return [...byId.values()].sort((a, b) => b.created_at - a.created_at);
+    const page = await NostrAPI.getPostsPage(hex, until, limit);
+    return page.posts;
   },
 
   getContactList: async (hex) => {
+    await ensureRuntime();
     try {
       const events = await pool.querySync(getConfiguredRelays(), { kinds: [3], authors: [hex], limit: 50 });
       return latestEvent(events);
@@ -84,6 +275,7 @@ export const NostrAPI = {
   },
 
   getMuteList: async (hex) => {
+    await ensureRuntime();
     try {
       return await pool.get(getConfiguredRelays(), { kinds: [10000], authors: [hex] });
     } catch (e) {
@@ -93,6 +285,7 @@ export const NostrAPI = {
   },
 
   getFollowers: async (hex) => {
+    await ensureRuntime();
     try {
       const events = await pool.querySync(getConfiguredRelays(), { kinds: [3], '#p': [hex], limit: 200 });
       return [...new Set(events.map(ev => ev.pubkey))];
@@ -103,6 +296,7 @@ export const NostrAPI = {
   },
 
   getFollowersPage: async (hex, until = null, limit = 30, excludePubkeys = []) => {
+    await ensureRuntime();
     try {
       const pageSize = Math.max(1, Number(limit) || 30);
       const queryLimit = Math.max(pageSize * 3, 100);
@@ -181,6 +375,7 @@ export const NostrAPI = {
   },
 
   getFollowingBackSet: async (hex, candidatePubkeys) => {
+    await ensureRuntime();
     const uniquePubkeys = [...new Set(candidatePubkeys || [])].filter(Boolean);
     if (uniquePubkeys.length === 0) return new Set();
 

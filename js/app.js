@@ -1,21 +1,27 @@
-import { NostrAPI } from './nostr.js';
-import { UI } from './ui.js';
-import { CONFIG } from './config.js';
+import { NostrAPI } from './nostr.js?v=2026082502';
+import { UI } from './ui.js?v=2026082502';
+import { CONFIG } from './config.js?v=2026082502';
 import {
   copyToClipboard,
   getConfiguredRelays,
   parseRelayText,
   resetConfiguredRelays,
   saveConfiguredRelays
-} from './utils.js';
+} from './utils.js?v=2026082502';
 
 const LAST_LOGIN_PUBKEY_KEY = 'nostr_profile_viewer_last_login_pubkey';
 
 window.loggedInPubkey = null;
 let currentProfileHex = null;
 let profileData = null;
-let oldestPostTime = null;
 let listLoadToken = 0;
+
+const postsState = {
+  cursor: null,
+  loadedIds: new Set(),
+  loading: false,
+  exhausted: false
+};
 
 const loggedInFollowingSet = new Set();
 const currentProfileFollowingSet = new Set();
@@ -59,26 +65,54 @@ const followersState = {
 
 async function init() {
   setupEventListeners();
-  restoreSavedLoginPubkey();
   renderSettingsView();
 
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get('settings') === '1') {
     showSettingsPage();
+    try {
+      await NostrAPI.ready();
+      restoreSavedLoginPubkey();
+    } catch (error) {
+      console.warn('nostr runtime unavailable on settings page', error);
+    }
     return;
   }
 
-  const resolvedHex = await resolveProfileHex(urlParams);
-  if (!resolvedHex) {
-    showOwnProfileLoginPrompt();
-    return;
-  }
+  try {
+    await NostrAPI.ready();
+    restoreSavedLoginPubkey();
 
-  if (window.loggedInPubkey) {
-    await refreshLoggedInFollowingSet();
-  }
+    const resolvedHex = await resolveProfileHex(urlParams);
+    if (!resolvedHex) {
+      showOwnProfileLoginPrompt();
+      return;
+    }
 
-  await loadProfilePage(resolvedHex);
+    if (window.loggedInPubkey) {
+      await refreshLoggedInFollowingSet();
+    }
+
+    await loadProfilePage(resolvedHex);
+  } catch (error) {
+    console.error('application initialization failed', error);
+    showInitializationError();
+  }
+}
+
+function showInitializationError() {
+  document.getElementById('settings-page')?.classList.add('hidden');
+  document.getElementById('profile-page')?.classList.add('hidden');
+
+  const startPage = document.getElementById('start-page');
+  if (!startPage) return;
+  startPage.innerHTML = `
+    <div class="message-card">
+      <h2>アプリケーションを読み込めませんでした</h2>
+      <p>Nostrライブラリの取得に失敗しました。ネットワーク設定やコンテンツブロッカーを確認して再読み込みしてください。</p>
+    </div>
+  `;
+  startPage.classList.remove('hidden');
 }
 
 async function resolveProfileHex(urlParams) {
@@ -172,7 +206,7 @@ function showOwnProfileLoginPrompt() {
 
 async function loadProfilePage(hex) {
   currentProfileHex = hex;
-  oldestPostTime = null;
+  resetPostsState();
 
   document.getElementById('settings-page')?.classList.add('hidden');
   document.getElementById('start-page')?.classList.add('hidden');
@@ -249,47 +283,73 @@ function setupAboutExpansion() {
   };
 }
 
+function resetPostsState() {
+  postsState.cursor = null;
+  postsState.loadedIds.clear();
+  postsState.loading = false;
+  postsState.exhausted = false;
+}
+
+function setPostsPaginationButton(hasMore, loading = false) {
+  const button = document.getElementById('btn-load-more');
+  button.classList.toggle('hidden', !hasMore && !loading);
+  button.disabled = loading;
+  button.textContent = loading ? '読み込み中...' : 'さらに読み込む';
+}
+
 async function loadInitialPosts() {
   const list = document.getElementById('posts-list');
-  const button = document.getElementById('btn-load-more');
   list.innerHTML = '';
-  button.classList.add('hidden');
+  resetPostsState();
+  setPostsPaginationButton(false);
 
-  const posts = await NostrAPI.getPosts(currentProfileHex, null, CONFIG.POSTS_PER_PAGE);
-  await UI.renderPosts(posts, 'posts-list', profileData, false);
+  try {
+    const page = await NostrAPI.getPostsPage(
+      currentProfileHex,
+      null,
+      CONFIG.POSTS_PER_PAGE,
+      postsState.loadedIds
+    );
 
-  if (posts.length > 0) {
-    oldestPostTime = posts[posts.length - 1].created_at;
-    button.classList.remove('hidden');
+    await UI.renderPosts(page.posts, 'posts-list', profileData, false);
+    for (const post of page.posts) postsState.loadedIds.add(post.id);
+    postsState.cursor = page.nextUntil;
+    postsState.exhausted = !page.hasMore;
+    setPostsPaginationButton(page.hasMore);
+  } catch (error) {
+    console.error('initial post page load failed', error);
+    postsState.exhausted = true;
+    setPostsPaginationButton(false);
+    list.innerHTML = "<p class='empty-message'>投稿の読み込みに失敗しました</p>";
   }
 }
 
 async function loadMorePosts() {
-  if (!oldestPostTime) return;
-  const button = document.getElementById('btn-load-more');
-  button.textContent = '読み込み中...';
-  button.disabled = true;
+  if (postsState.loading || postsState.exhausted || postsState.cursor === null) return;
+
+  postsState.loading = true;
+  setPostsPaginationButton(true, true);
 
   try {
-    const posts = await NostrAPI.getPosts(
+    const page = await NostrAPI.getPostsPage(
       currentProfileHex,
-      oldestPostTime - 1,
-      CONFIG.POSTS_PER_PAGE
+      postsState.cursor,
+      CONFIG.POSTS_PER_PAGE,
+      postsState.loadedIds
     );
-    await UI.renderPosts(posts, 'posts-list', profileData, true);
 
-    if (posts.length > 0) {
-      oldestPostTime = posts[posts.length - 1].created_at;
-      button.textContent = 'さらに読み込む';
-      button.disabled = false;
-    } else {
-      button.classList.add('hidden');
-    }
+    await UI.renderPosts(page.posts, 'posts-list', profileData, true);
+    for (const post of page.posts) postsState.loadedIds.add(post.id);
+
+    postsState.cursor = page.nextUntil;
+    postsState.exhausted = !page.hasMore || page.posts.length === 0;
+    setPostsPaginationButton(!postsState.exhausted);
   } catch (error) {
     console.error('post page load failed', error);
-    button.textContent = 'さらに読み込む';
-    button.disabled = false;
+    setPostsPaginationButton(true);
     alert('投稿の読み込みに失敗しました');
+  } finally {
+    postsState.loading = false;
   }
 }
 

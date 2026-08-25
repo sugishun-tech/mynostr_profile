@@ -1,4 +1,4 @@
-import { CONFIG } from './config.js';
+import { CONFIG } from './config.js?v=2026082502';
 
 export function formatJST(unixTimestamp) {
   const d = new Date(unixTimestamp * 1000);
